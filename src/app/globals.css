@@ -1,0 +1,51 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-cream: #fbf7f0;
+  --color-paper: #ffffff;
+  --color-sand: #f1e8da;
+  --color-sand-strong: #e4d5bf;
+  --color-line: #e7dccb;
+  --color-ink: #3b2a1e;
+  --color-ink-soft: #6f5a49;
+  --color-ink-muted: #998472;
+  --color-brown: #8a5a36;
+  --color-brown-dark: #6e4527;
+  --color-brown-soft: #c9a27f;
+  --color-good: #3f7a4a;
+  --color-good-bg: #e8f2e6;
+  --color-warn: #9a6a12;
+  --color-warn-bg: #fbf0d6;
+  --color-bad: #a63d2f;
+  --color-bad-bg: #f9e3df;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --radius-xl: 14px;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+body {
+  background: var(--color-cream);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-feature-settings: 'tnum' 1;
+}
+.num {
+  font-variant-numeric: tabular-nums;
+}
+input,
+select,
+textarea {
+  font-size: 16px; /* zabrání zoomu na iPhonu */
+}
+@media (min-width: 768px) {
+  input,
+  select,
+  textarea {
+    font-size: 14px;
+  }
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}

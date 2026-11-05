@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#8a5a36"/>
+  <path d="M136 300a120 120 0 0 1 240 0" fill="none" stroke="#f1e8da" stroke-width="22" stroke-linecap="round"/>
+  <rect x="112" y="300" width="288" height="22" rx="11" fill="#f1e8da"/>
+  <text x="256" y="282" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="150" font-weight="700" fill="#fbf7f0">Z</text>
+  <text x="256" y="400" text-anchor="middle" font-family="Georgia, serif" font-size="56" fill="#f1e8da" letter-spacing="6">TROUBY</text>
+</svg>

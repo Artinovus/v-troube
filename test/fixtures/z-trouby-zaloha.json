@@ -1,0 +1,35 @@
+{
+  "products": [
+    {
+      "name": "Linecké cukroví",
+      "qty": 10,
+      "wholesale": 55,
+      "cafePrice": 95,
+      "cafePortions": 1,
+      "yield": 20,
+      "ingredients": [
+        { "name": "Hladká mouka", "used": 300, "unit": "g", "size": 1000, "price": 22 },
+        { "name": "Máslo", "used": 200, "unit": "g", "size": 250, "price": 65 }
+      ]
+    },
+    {
+      "name": "Banánový chlebíček",
+      "qty": 2,
+      "wholesale": 360,
+      "cafePrice": 65,
+      "cafePortions": 12,
+      "yield": 1,
+      "ingredients": [
+        { "name": "hladká mouka", "used": 0.25, "unit": "kg", "size": 1, "price": 25 },
+        { "name": "Banány", "used": 400, "unit": "g", "size": 1000, "price": "39,90" }
+      ]
+    }
+  ],
+  "days": 8,
+  "hours": 7,
+  "hourly": 200,
+  "fixed": 1000,
+  "packing": 120,
+  "delivery": 150,
+  "other": 0
+}
