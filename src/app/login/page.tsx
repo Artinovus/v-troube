@@ -2,11 +2,15 @@ import type { Metadata } from 'next';
 import { LoginForm } from './login-form';
 import { signOutAction } from './actions';
 import { Button } from '@/components/ui/button';
+import { redirect } from 'next/navigation';
+import { getSessionUser } from '@/lib/auth';
 
 export const metadata: Metadata = { title: 'Přihlášení' };
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
   const { error } = await searchParams;
+  const user = await getSessionUser();
+  if (user?.role === 'admin') redirect('/');
   return (
     <main className="flex min-h-dvh items-center justify-center px-4 py-10">
       <div className="w-full max-w-sm">

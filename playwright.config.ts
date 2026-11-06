@@ -18,8 +18,5 @@ export default defineConfig({
   reporter: [['list']],
   globalSetup: './test/e2e/global-setup.ts',
   use: { baseURL: 'http://localhost:3100', trace: 'retain-on-failure', ...devices['iPhone 13'], browserName: 'chromium' },
-  webServer: [
-    { command: 'node test/support/mock-auth-server.mjs', port: 54321, reuseExistingServer: false, env },
-    { command: 'npx next start -p 3100', port: 3100, reuseExistingServer: false, env, timeout: 60_000 },
-  ],
+  webServer: { command: 'npx next start -p 3100', port: 3100, reuseExistingServer: false, env, timeout: 60_000 },
 });

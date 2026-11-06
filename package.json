@@ -11,13 +11,12 @@
     "test": "vitest run",
     "test:db": "vitest run --config vitest.db.config.ts",
     "test:e2e": "playwright test",
-    "create-admin": "node scripts/create-admin.mjs",
+    "create-admin": "node --experimental-strip-types --no-warnings scripts/create-admin.mjs",
     "test:all": "npm run lint && npm test && npm run test:db && npm run build && npm run test:e2e",
-    "test:reset-db": "node scripts/test-db-reset.mjs"
+    "test:reset-db": "node scripts/test-db-reset.mjs",
+    "db:migrate": "node scripts/migrate.mjs"
   },
   "dependencies": {
-    "@supabase/ssr": "^0.12.7",
-    "@supabase/supabase-js": "^2.119.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.69.0",
@@ -42,6 +41,6 @@
     "vitest": "^5.1.0"
   },
   "engines": {
-    "node": ">=20.9"
+    "node": ">=22.6"
   }
 }

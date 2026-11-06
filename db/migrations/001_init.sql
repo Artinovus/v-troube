@@ -1,37 +1,69 @@
--- Z trouby – počáteční schéma
--- Všechna podnikatelská data jsou vázaná na vlastníka (owner_id = auth.users.id)
--- a chráněná Row Level Security. V první verzi má přístup pouze role "admin".
-
-create extension if not exists pgcrypto with schema extensions;
+-- Z trouby – počáteční schéma (čistý PostgreSQL 14+)
+-- Všechna podnikatelská data jsou vázaná na vlastníka (owner_id = app_users.id)
+-- a chráněná Row Level Security. Aplikace se k databázi připojuje jedním účtem
+-- a pro každý požadavek přepne na roli "ztrouby_app" s nastaveným app.user_id.
+-- V první verzi má přístup k datům pouze role "admin".
 
 -- ---------------------------------------------------------------------------
--- Profily a role
+-- Databázová role aplikace (bez přihlášení, jen pro SET ROLE)
 -- ---------------------------------------------------------------------------
-create table public.profiles (
-  id uuid primary key references auth.users (id) on delete cascade,
-  email text,
-  role text not null default 'user' check (role in ('admin', 'user')),
-  created_at timestamptz not null default now()
-);
-
--- Profil vzniká automaticky při vytvoření uživatele. Role admin se NIKDY
--- nepřiděluje automaticky – nastavuje ji skript create-admin (service role).
-create or replace function public.handle_new_user()
-returns trigger
-language plpgsql
-security definer
-set search_path = ''
-as $$
+do $$
 begin
-  insert into public.profiles (id, email) values (new.id, new.email)
-  on conflict (id) do nothing;
-  return new;
+  if not exists (select 1 from pg_roles where rolname = 'ztrouby_app') then
+    create role ztrouby_app nologin noinherit;
+  end if;
 end;
 $$;
+grant ztrouby_app to current_user;
 
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function public.handle_new_user();
+create schema if not exists app;
+grant usage on schema app to ztrouby_app;
+grant usage on schema public to ztrouby_app;
+
+-- Identita přihlášeného uživatele pro aktuální transakci (nastavuje server).
+create or replace function app.current_user_id()
+returns uuid
+language sql
+stable
+as $$
+  select nullif(current_setting('app.user_id', true), '')::uuid
+$$;
+grant execute on function app.current_user_id() to ztrouby_app;
+
+-- ---------------------------------------------------------------------------
+-- Uživatelé a relace (přístupné jen serverové části, ne roli ztrouby_app)
+-- ---------------------------------------------------------------------------
+create table public.app_users (
+  id uuid primary key default gen_random_uuid(),
+  email text not null,
+  password_hash text not null,
+  role text not null default 'user' check (role in ('admin', 'user')),
+  failed_login_attempts integer not null default 0,
+  locked_until timestamptz,
+  last_login_at timestamptz,
+  password_changed_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+create unique index app_users_email_uq on public.app_users (lower(email));
+
+create table public.app_sessions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.app_users (id) on delete cascade,
+  -- v databázi je jen SHA-256 otisk tokenu, samotný token zná jen prohlížeč
+  token_hash text not null unique,
+  created_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  user_agent text
+);
+create index app_sessions_user_idx on public.app_sessions (user_id);
+create index app_sessions_expires_idx on public.app_sessions (expires_at);
+
+alter table public.app_users enable row level security;
+alter table public.app_sessions enable row level security;
+-- Role aplikace smí číst jen vlastní řádek uživatele (kvůli kontrole role admin).
+create policy app_users_select_own on public.app_users
+  for select to ztrouby_app using (id = (select app.current_user_id()));
 
 create or replace function public.is_admin()
 returns boolean
@@ -41,8 +73,8 @@ security definer
 set search_path = ''
 as $$
   select exists (
-    select 1 from public.profiles p
-    where p.id = (select auth.uid()) and p.role = 'admin'
+    select 1 from public.app_users u
+    where u.id = (select app.current_user_id()) and u.role = 'admin'
   );
 $$;
 
@@ -65,7 +97,7 @@ $$;
 -- ---------------------------------------------------------------------------
 create table public.ingredients (
   id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  owner_id uuid not null default app.current_user_id() references public.app_users (id) on delete cascade,
   name text not null check (length(btrim(name)) > 0),
   category text not null default 'ostatní',
   brand text,
@@ -88,7 +120,7 @@ create trigger ingredients_updated_at before update on public.ingredients
 
 create table public.ingredient_price_history (
   id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  owner_id uuid not null default app.current_user_id() references public.app_users (id) on delete cascade,
   ingredient_id uuid not null,
   old_price numeric(12, 2),
   new_price numeric(12, 2),
@@ -134,7 +166,7 @@ create trigger ingredients_price_history after insert or update on public.ingred
 -- ---------------------------------------------------------------------------
 create table public.recipes (
   id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  owner_id uuid not null default app.current_user_id() references public.app_users (id) on delete cascade,
   name text not null check (length(btrim(name)) > 0),
   description text,
   notes text,
@@ -153,7 +185,7 @@ create trigger recipes_updated_at before update on public.recipes
 
 create table public.recipe_ingredients (
   id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  owner_id uuid not null default app.current_user_id() references public.app_users (id) on delete cascade,
   recipe_id uuid not null,
   ingredient_id uuid,
   sub_recipe_id uuid,
@@ -206,7 +238,7 @@ create trigger recipe_ingredients_cycle before insert or update on public.recipe
 -- ---------------------------------------------------------------------------
 create table public.products (
   id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  owner_id uuid not null default app.current_user_id() references public.app_users (id) on delete cascade,
   recipe_id uuid,
   name text not null check (length(btrim(name)) > 0),
   category text not null default 'ostatní',
@@ -234,7 +266,7 @@ create trigger products_updated_at before update on public.products
 
 create table public.product_price_history (
   id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  owner_id uuid not null default app.current_user_id() references public.app_users (id) on delete cascade,
   product_id uuid not null,
   old_wholesale_price numeric(12, 2),
   wholesale_price numeric(12, 2),
@@ -275,7 +307,7 @@ create trigger products_price_history after insert or update on public.products
 -- ---------------------------------------------------------------------------
 create table public.cost_settings (
   id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null default auth.uid() unique references auth.users (id) on delete cascade,
+  owner_id uuid not null default app.current_user_id() unique references public.app_users (id) on delete cascade,
   baking_days_per_month numeric(6, 2) not null default 8 check (baking_days_per_month >= 0),
   hours_per_baking_day numeric(6, 2) not null default 7 check (hours_per_baking_day >= 0),
   hourly_labor_cost numeric(12, 2) not null default 200 check (hourly_labor_cost >= 0),
@@ -295,7 +327,7 @@ create trigger cost_settings_updated_at before update on public.cost_settings
 -- U hmotnostního prodeje je množství v gramech.
 create table public.plan_items (
   id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  owner_id uuid not null default app.current_user_id() references public.app_users (id) on delete cascade,
   product_id uuid not null,
   quantity_per_baking_day numeric(12, 3) not null default 0 check (quantity_per_baking_day >= 0),
   unique (owner_id, product_id),
@@ -306,7 +338,7 @@ create table public.plan_items (
 -- takže pozdější změny receptů či cen jejich hodnoty nepřepíší.
 create table public.production_scenarios (
   id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  owner_id uuid not null default app.current_user_id() references public.app_users (id) on delete cascade,
   name text not null check (length(btrim(name)) > 0),
   note text,
   settings_snapshot jsonb not null,
@@ -319,7 +351,7 @@ create index production_scenarios_owner_idx on public.production_scenarios (owne
 
 create table public.production_scenario_items (
   id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  owner_id uuid not null default app.current_user_id() references public.app_users (id) on delete cascade,
   scenario_id uuid not null,
   product_id uuid,
   product_name text not null,
@@ -336,7 +368,6 @@ create index production_scenario_items_scenario_idx on public.production_scenari
 -- ---------------------------------------------------------------------------
 -- Row Level Security
 -- ---------------------------------------------------------------------------
-alter table public.profiles enable row level security;
 alter table public.ingredients enable row level security;
 alter table public.ingredient_price_history enable row level security;
 alter table public.recipes enable row level security;
@@ -348,9 +379,6 @@ alter table public.plan_items enable row level security;
 alter table public.production_scenarios enable row level security;
 alter table public.production_scenario_items enable row level security;
 
--- Profil: uživatel smí číst pouze svůj profil. Změnu role nesmí provádět sám.
-create policy profiles_select_own on public.profiles
-  for select to authenticated using (id = (select auth.uid()));
 
 do $$
 declare
@@ -361,32 +389,30 @@ begin
     'cost_settings', 'plan_items', 'production_scenarios', 'production_scenario_items'
   ] loop
     execute format(
-      'create policy %1$s_owner_admin on public.%1$I for all to authenticated
-         using (owner_id = (select auth.uid()) and (select public.is_admin()))
-         with check (owner_id = (select auth.uid()) and (select public.is_admin()))', t);
+      'create policy %1$s_owner_admin on public.%1$I for all to ztrouby_app
+         using (owner_id = (select app.current_user_id()) and (select public.is_admin()))
+         with check (owner_id = (select app.current_user_id()) and (select public.is_admin()))', t);
   end loop;
   -- Historie: čtení a vkládání (triggery, import zálohy), bez úprav a mazání.
   foreach t in array array['ingredient_price_history', 'product_price_history'] loop
     execute format(
-      'create policy %1$s_select on public.%1$I for select to authenticated
-         using (owner_id = (select auth.uid()) and (select public.is_admin()))', t);
+      'create policy %1$s_select on public.%1$I for select to ztrouby_app
+         using (owner_id = (select app.current_user_id()) and (select public.is_admin()))', t);
     execute format(
-      'create policy %1$s_insert on public.%1$I for insert to authenticated
-         with check (owner_id = (select auth.uid()) and (select public.is_admin()))', t);
+      'create policy %1$s_insert on public.%1$I for insert to ztrouby_app
+         with check (owner_id = (select app.current_user_id()) and (select public.is_admin()))', t);
   end loop;
 end;
 $$;
 
--- Supabase přiděluje rolím anon/authenticated výchozí práva na nové tabulky – odebereme je
--- a přidělíme jen to, co aplikace potřebuje. Řádky navíc filtruje RLS.
-revoke all on all tables in schema public from anon, authenticated;
-revoke all on all functions in schema public from anon;
-grant select on public.profiles to authenticated;
+revoke all on all tables in schema public from public;
+revoke all on function public.is_admin() from public;
+grant select (id, email, role) on public.app_users to ztrouby_app;
 grant select, insert, update, delete on
   public.ingredients, public.recipes, public.recipe_ingredients, public.products,
   public.cost_settings, public.plan_items, public.production_scenarios, public.production_scenario_items
-  to authenticated;
-grant select, insert on public.ingredient_price_history, public.product_price_history to authenticated;
+  to ztrouby_app;
+grant select, insert on public.ingredient_price_history, public.product_price_history to ztrouby_app;
 
 -- ---------------------------------------------------------------------------
 -- Výchozí data při prvním přihlášení administrátora
@@ -399,7 +425,7 @@ security invoker
 set search_path = ''
 as $$
 declare
-  uid uuid := auth.uid();
+  uid uuid := app.current_user_id();
   r_uzel_mak uuid; r_uzel_orech uuid; r_uzel_kard uuid; r_cookie uuid;
   r_medovnik uuid; r_banan uuid; r_pernik uuid;
   unverified text := 'Výchozí orientační receptura – suroviny a gramáže zatím nejsou ověřené, doplňte je.';
@@ -465,6 +491,6 @@ begin
   return true;
 end;
 $$;
-revoke all on function public.seed_initial_data() from public, anon;
-grant execute on function public.seed_initial_data() to authenticated;
-grant execute on function public.is_admin() to authenticated;
+revoke all on function public.seed_initial_data() from public;
+grant execute on function public.seed_initial_data() to ztrouby_app;
+grant execute on function public.is_admin() to ztrouby_app;

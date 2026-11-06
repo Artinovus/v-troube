@@ -236,3 +236,47 @@ test('mobilní zobrazení bez vodorovného posunu', async ({ page }) => {
     expect(overflow, `vodorovný posun na ${path}`).toBeLessThanOrEqual(1);
   }
 });
+
+test('zamčení účtu po opakovaně chybném heslu a změna hesla', async ({ page }) => {
+  for (let i = 0; i < 5; i++) {
+    await login(page, 'zamek@ztrouby.test', 'spatne-heslo', false);
+    await expect(page.getByText('Nesprávný e-mail nebo heslo.')).toBeVisible();
+  }
+  await login(page, 'zamek@ztrouby.test', 'heslo123', false);
+  await expect(page.getByText(/Příliš mnoho neúspěšných pokusů/)).toBeVisible();
+
+  // změna hesla a odhlášení ostatních zařízení
+  await login(page, 'druha@ztrouby.test');
+  await page.goto('/settings');
+  await page.getByLabel('Současné heslo').fill('heslo123');
+  await page.getByLabel('Nové heslo', { exact: true }).fill('nove-dlouhe-heslo');
+  await page.getByLabel('Nové heslo znovu').fill('nove-dlouhe-heslo');
+  await page.getByRole('button', { name: 'Změnit heslo' }).click();
+  await expect(page.getByText('Heslo změněno')).toBeVisible();
+  await logout(page);
+  await login(page, 'druha@ztrouby.test', 'heslo123', false);
+  await expect(page.getByText('Nesprávný e-mail nebo heslo.')).toBeVisible();
+  await login(page, 'druha@ztrouby.test', 'nove-dlouhe-heslo');
+});
+
+test('odhlášení zneplatní relaci i na serveru', async ({ page, browser }) => {
+  await login(page);
+  const cookies = await page.context().cookies();
+  const session = cookies.find((c) => c.name === 'zt_session')!;
+  expect(session.httpOnly).toBe(true);
+  await logout(page);
+  // stará cookie už nic neotevře
+  const ctx = await browser.newContext();
+  await ctx.addCookies([{ ...session }]);
+  const res = await ctx.request.get('http://localhost:3100/api/export/backup');
+  expect(res.status()).toBe(401);
+  const other = await ctx.newPage();
+  await other.goto('http://localhost:3100/ingredients');
+  await expect(other).toHaveURL(/\/login$/);
+  await ctx.close();
+  // podvržená cookie také ne
+  const ctx2 = await browser.newContext();
+  await ctx2.addCookies([{ ...session, value: 'podvrh' }]);
+  expect((await ctx2.request.get('http://localhost:3100/api/export/products')).status()).toBe(401);
+  await ctx2.close();
+});

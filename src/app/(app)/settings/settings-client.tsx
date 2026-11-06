@@ -11,7 +11,7 @@ import { ConfirmDialog } from '@/components/ui/dialog';
 import { Switch } from '@/components/ui/switch';
 import { NumberField } from '@/components/app/number-field';
 import { SaveIndicator, useAutosave } from '@/components/app/autosave';
-import { importLegacyAction, restoreBackupAction, saveSettingsAction } from '@/app/actions';
+import { changePasswordAction, importLegacyAction, logoutOtherSessionsAction, restoreBackupAction, saveSettingsAction } from '@/app/actions';
 import { signOutAction } from '@/app/login/actions';
 import { parseBackup } from '@/lib/backup/schema';
 import { buildLegacyPlan, findExistingIngredient, isLegacyFormat, parseLegacy, type LegacyDecisions, type LegacyParseResult } from '@/lib/backup/legacy';
@@ -52,7 +52,11 @@ export function SettingsClient({ ws, email }: { ws: Workspace; email: string | n
         <Card className="space-y-2">
           <CardTitle>Účet</CardTitle>
           <p className="text-sm text-ink-soft">Přihlášena jako <strong>{email}</strong> (administrátor).</p>
-          <form action={signOutAction}><Button variant="outline" type="submit"><LogOut /> Odhlásit se</Button></form>
+          <PasswordForm />
+          <div className="flex flex-wrap gap-2 pt-2">
+            <form action={signOutAction}><Button variant="outline" type="submit"><LogOut /> Odhlásit se</Button></form>
+            <Button variant="ghost" onClick={async () => { const r = await logoutOtherSessionsAction(); if (r.ok) toast.success(r.message!); else toast.error(r.error); }}>Odhlásit ostatní zařízení</Button>
+          </div>
         </Card>
       </div>
     </>
@@ -205,5 +209,31 @@ function LegacyWizard({ parsed, json, ws, onDone }: { parsed: LegacyParseResult;
         <Button variant="ghost" onClick={onDone}>Zrušit</Button>
       </div>
     </div>
+  );
+}
+
+function PasswordForm() {
+  const [v, setV] = React.useState({ current: '', next: '', confirm: '' });
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  return (
+    <form
+      className="space-y-2 border-t border-line pt-3"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setError(null);
+        const r = await changePasswordAction(v);
+        setBusy(false);
+        if (r.ok) { toast.success(r.message!); setV({ current: '', next: '', confirm: '' }); } else setError(r.error);
+      }}
+    >
+      <p className="text-sm font-medium">Změna hesla</p>
+      <Input type="password" autoComplete="current-password" placeholder="Současné heslo" aria-label="Současné heslo" value={v.current} onChange={(e) => setV({ ...v, current: e.target.value })} />
+      <Input type="password" autoComplete="new-password" placeholder="Nové heslo (min. 12 znaků)" aria-label="Nové heslo" value={v.next} onChange={(e) => setV({ ...v, next: e.target.value })} />
+      <Input type="password" autoComplete="new-password" placeholder="Nové heslo znovu" aria-label="Nové heslo znovu" value={v.confirm} onChange={(e) => setV({ ...v, confirm: e.target.value })} />
+      {error ? <p role="alert" className="text-sm text-bad">{error}</p> : null}
+      <Button type="submit" variant="secondary" disabled={busy || !v.current || !v.next}>{busy ? 'Ukládám…' : 'Změnit heslo'}</Button>
+    </form>
   );
 }

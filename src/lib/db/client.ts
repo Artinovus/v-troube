@@ -10,7 +10,7 @@ function create() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error('Chybí proměnná prostředí DATABASE_URL.');
   return postgres(url, {
-    // Supabase transaction pooler (port 6543) nepodporuje prepared statements
+    // poolery v transakčním režimu (PgBouncer, Neon pooler) nepodporují prepared statements
     prepare: false,
     max: Number(process.env.DATABASE_POOL_MAX ?? 5),
     idle_timeout: 20,

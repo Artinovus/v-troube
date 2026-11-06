@@ -75,11 +75,17 @@ describe('15. izolace dat a RLS', () => {
     expect(await withUserTx(C, (tx) => tx`select * from public.ingredients`)).toHaveLength(0);
     await expect(withUserTx(C, (tx) => tx`insert into public.ingredients (name) values ('x')`)).rejects.toThrow(/row-level security/);
   });
-  it('uživatel si nemůže sám přidělit roli admin', async () => {
-    await expect(withUserTx(C, (tx) => tx`update public.profiles set role = 'admin' where id = ${C}`)).rejects.toThrow(/permission denied/);
+  it('uživatel si nemůže sám přidělit roli admin ani číst hesla a relace', async () => {
+    await expect(withUserTx(C, (tx) => tx`update public.app_users set role = 'admin' where id = ${C}`)).rejects.toThrow(/permission denied/);
+    await expect(withUserTx(A, (tx) => tx`select password_hash from public.app_users`)).rejects.toThrow(/permission denied/);
+    await expect(withUserTx(A, (tx) => tx`select * from public.app_sessions`)).rejects.toThrow(/permission denied/);
+    const others = await withUserTx(A, (tx) => tx`select id from public.app_users`);
+    expect(others.map((r) => r.id)).toEqual([A]);
   });
-  it('anonymní role nemá k tabulkám přístup', async () => {
-    await expect(sql.begin(async (tx) => { await tx`set local role anon`; return tx`select * from public.ingredients`; })).rejects.toThrow(/permission denied/);
+  it('bez identity uživatele role aplikace nic nevidí ani nezapíše', async () => {
+    const rows = await sql.begin(async (tx) => { await tx`set local role ztrouby_app`; return tx`select * from public.ingredients`; });
+    expect(rows).toHaveLength(0);
+    await expect(sql.begin(async (tx) => { await tx`set local role ztrouby_app`; return tx`insert into public.ingredients (name) values ('x')`; })).rejects.toThrow();
   });
   it('historie cen nelze mazat ani upravovat', async () => {
     await expect(withUserTx(A, (tx) => tx`delete from public.ingredient_price_history`)).rejects.toThrow(/permission denied/);

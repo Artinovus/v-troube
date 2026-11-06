@@ -8,7 +8,8 @@ Webová aplikace pro řízení nákladů, receptur a cenotvorby řemeslné domá
 - Kalkulačka výroby: plán pečení, celé výrobní dávky a přebytky, práce, balení, doprava, provoz, bod zvratu.
 - Zisk kavárny: hrubý rozdíl a hrubá marže odběratele, porce, DPH režim.
 - Cenové scénáře (bez přepsání uložených cen), export CSV/JSON, import zálohy i staré HTML kalkulačky.
-- Pouze po přihlášení, data chráněná na serveru i Row Level Security v databázi. Mobile‑first, instalovatelné jako PWA.
+- Vlastní přihlašování (bez externí služby), data chráněná na serveru i Row Level Security v databázi. Mobile‑first, instalovatelné jako PWA.
+- Běží s **libovolnou PostgreSQL databází** – Vercel + Neon, nebo vlastní server přes Docker.
 
 ---
 
@@ -18,9 +19,9 @@ Webová aplikace pro řízení nákladů, receptur a cenotvorby řemeslné domá
 2. [Datový model](#2-datový-model)
 3. [Výpočty a vzorce](#3-výpočty-a-vzorce)
 4. [Instalace a lokální vývoj](#4-instalace-a-lokální-vývoj)
-5. [Nastavení Supabase](#5-nastavení-supabase)
+5. [Databáze](#5-databáze)
 6. [Vytvoření administrátorského účtu](#6-vytvoření-administrátorského-účtu)
-7. [Nasazení na Vercel](#7-nasazení-na-vercel)
+7. [Nasazení](#7-nasazení)
 8. [Import původních dat](#8-import-původních-dat)
 9. [Krátký návod k používání](#9-krátký-návod-k-používání)
 10. [Testy](#10-testy)
@@ -35,24 +36,25 @@ Webová aplikace pro řízení nákladů, receptur a cenotvorby řemeslné domá
 |---|---|
 | Frontend | Next.js 16 (App Router), React 19, TypeScript |
 | UI | Tailwind CSS 4, komponenty ve stylu shadcn/ui nad Radix UI, ikony Lucide, notifikace Sonner |
-| Databáze | PostgreSQL v Supabase (migrace v `supabase/migrations`) |
-| Autentizace | Supabase Auth (e‑mail + heslo), relace v HTTP‑only cookies přes `@supabase/ssr` |
+| Databáze | PostgreSQL 14+ (libovolný poskytovatel), knihovna `postgres`, migrace v `db/migrations` |
+| Autentizace | vlastní: e‑mail + heslo (scrypt), relace v HTTP‑only cookie, otisk tokenu v databázi |
 | Validace | Zod (všechny vstupy server actions a import) |
 | Grafy | jednoduché přístupné pruhové grafy v CSS (bez další knihovny) |
-| Testy | Vitest (výpočty, import/export, databáze + RLS), Playwright (end‑to‑end) |
-| Nasazení | Vercel + Supabase |
+| Testy | Vitest (výpočty, hesla, import/export, databáze + RLS), Playwright (end‑to‑end) |
+| Nasazení | Vercel + Neon (Vercel Postgres), nebo Docker na vlastním serveru |
 
 ```
 src/
-  proxy.ts                 1. vrstva ochrany: obnova relace, přesměrování na /login, 401 pro /api
+  proxy.ts                 1. vrstva ochrany: bez cookie relace → /login, API → 401
   lib/
     calc/                  BUSINESS LOGIKA – čisté, testovatelné funkce (bez DB a UI)
       recipe.ts            náklad suroviny, dávky, polotovary, dopad změny ceny
       pricing.ts           marže, přirážka, doporučená cena, převod receptura ↔ prodejní jednotka
       plan.ts              měsíční kalkulace, výrobní dávky, přebytky, bod zvratu
       cafe.ts              hrubý rozdíl a marže kavárny, DPH
-    auth.ts                AUTORIZACE – ověření relace na serveru, role admin
-    db/                    DATABÁZE – připojení, transakce pod rolí "authenticated" (RLS)
+    auth.ts                AUTENTIZACE A AUTORIZACE – přihlášení, relace, zámek účtu, role admin
+    password.ts            hashování hesel (scrypt) a tokenů relací
+    db/                    DATABÁZE – připojení, transakce pod rolí "ztrouby_app" (RLS)
     data/                  repozitář (načítání, ukládání, záloha, import)
     backup/                formát zálohy (Zod), CSV, převod staré kalkulačky
     validation.ts          Zod schémata vstupů
@@ -62,12 +64,16 @@ src/
     login/                 jediná veřejná stránka
     (app)/                 chráněné stránky: přehled, suroviny, receptury, výrobky, kalkulačka, kavárna, nastavení
   components/              UI komponenty
-supabase/migrations/       schéma, RLS, triggery historie, výchozí data
-scripts/create-admin.mjs   bezpečné vytvoření prvního administrátora
+db/migrations/             schéma, RLS, triggery historie, výchozí data
+scripts/migrate.mjs        spuštění migrací
+scripts/create-admin.mjs   bezpečné vytvoření administrátora / reset hesla
 test/                      unit, db a e2e testy
+Dockerfile, docker-compose.yml   provoz na vlastním serveru
 ```
 
-**Jak se přistupuje k datům.** Server ověří relaci přes `supabase.auth.getUser()` (token ověřuje Supabase Auth). Poté spustí dotazy v transakci, kde nastaví `role = authenticated` a `request.jwt.claims.sub = <id uživatele>` – stejně jako to dělá Supabase API. Funkce `auth.uid()` i všechny RLS politiky tak platí i pro serverové dotazy. Díky přímému připojení jsou složitější operace (uložení receptury se všemi řádky, obnova zálohy, import) **atomické** – buď se provedou celé, nebo vůbec.
+**Přihlášení.** Hesla se ukládají jen jako hash scrypt (s náhodnou solí). Po přihlášení dostane prohlížeč náhodný 256bitový token v HTTP‑only cookie (`SameSite=Lax`, v produkci `Secure`, platnost 30 dní); databáze zná jen jeho SHA‑256 otisk, takže ani únik databáze neumožní převzít relaci. Odhlášení relaci v databázi smaže. Po 5 chybných pokusech se účet na 15 minut zamkne. Neexistující e‑mail se ověřuje stejně dlouho jako existující.
+
+**Jak se přistupuje k datům.** Server ověří relaci a pak spustí dotazy v transakci, kde přepne na databázovou roli `ztrouby_app` a nastaví `app.user_id`. Všechny RLS politiky (`owner_id = app.current_user_id() AND is_admin()`) tak platí i pro serverový kód – chyba v aplikaci nemůže zpřístupnit cizí data. Složitější operace (uložení receptury, obnova zálohy, import) jsou **atomické**.
 
 **Ukládání v UI.** Formuláře se přepočítávají okamžitě v prohlížeči (stejné funkce z `lib/calc`), změny se ukládají do databáze automaticky s krátkým zpožděním. Indikátor ukazuje *Neuložené změny / Ukládám… / Uloženo / Chyba / Offline*. „Uloženo“ se zobrazí **jen po potvrzení serverem**. Při odchodu ze stránky se rozpracované změny odešlou okamžitě, při zavírání okna prohlížeč varuje.
 
@@ -77,7 +83,8 @@ Všechny tabulky používají UUID a mají `owner_id` (vlastník = uživatel). V
 
 | Tabulka | Účel |
 |---|---|
-| `profiles` | e‑mail a role (`admin` / `user`); vzniká automaticky triggerem, roli admin nastavuje jen skript |
+| `app_users` | e‑mail, hash hesla, role (`admin` / `user`), počítadlo chybných pokusů a zámek; role aplikace smí číst jen svůj řádek bez hesla |
+| `app_sessions` | přihlášení: otisk tokenu, platnost, zařízení; pro roli aplikace nepřístupné |
 | `ingredients` | surovina: název, kategorie, značka, dodavatel, obsah balení + jednotka (g/ml/ks), cena balení, datum ceny, aktivní |
 | `ingredient_price_history` | každá změna ceny / balení (trigger); jen čtení a vkládání |
 | `recipes` | receptura: výtěžnost + jednotka (ks/g/ml), stav (koncept/aktivní/archiv), polotovar, „gramáže ověřeny“ |
@@ -121,55 +128,66 @@ Neplatné vstupy (záporné, prázdné, NaN) se počítají jako 0 a dělení nu
 
 ## 4. Instalace a lokální vývoj
 
-Požadavky: Node.js 20.9+ (doporučeno 22), účet Supabase.
+Požadavky: Node.js 22.6+ a PostgreSQL 14+ (lokálně, v Dockeru, nebo zdarma na Neonu).
 
 ```bash
 git clone <repo> && cd v-troube
 npm ci
-cp .env.example .env.local     # vyplňte hodnoty ze Supabase (viz níže)
+cp .env.example .env.local     # nastavte DATABASE_URL
+npm run db:migrate             # vytvoří tabulky
+npm run create-admin -- vas-email@example.cz
 npm run dev                    # http://localhost:3000
 ```
 
-## 5. Nastavení Supabase
+Lokální PostgreSQL v Dockeru: `docker run -d --name ztrouby-db -e POSTGRES_PASSWORD=heslo -p 5432:5432 postgres:16` a `DATABASE_URL=postgresql://postgres:heslo@localhost:5432/postgres`.
 
-1. Na <https://supabase.com> vytvořte nový projekt (region např. *Central EU – Frankfurt*). Heslo k databázi si uložte.
-2. **Vypněte veřejnou registraci:** *Authentication → Sign In / Providers → Email*: ponechte zapnuté přihlášení e‑mailem, vypněte **Allow new users to sign up**. (Volitelně vypněte *Confirm email* – účty zakládá admin.)
-3. **Spusťte migraci** jedním ze způsobů:
-   - SQL Editor → vložte obsah `supabase/migrations/20261105000000_init.sql` → *Run*, nebo
-   - Supabase CLI: `npx supabase link --project-ref <ref>` a `npx supabase db push`.
-4. Zjistěte hodnoty do `.env.local`:
-   - `NEXT_PUBLIC_SUPABASE_URL` a `NEXT_PUBLIC_SUPABASE_ANON_KEY` – *Project Settings → API* (anon / publishable key),
-   - `DATABASE_URL` – *Connect → Connection string → Transaction pooler* (port **6543**), doplňte heslo,
-   - `SUPABASE_SERVICE_ROLE_KEY` – *Project Settings → API* (service_role / secret). **Jen lokálně pro skript, nikam jinam.**
-5. *Authentication → URL Configuration*: nastavte *Site URL* na adresu aplikace (po nasazení na Vercel).
+## 5. Databáze
+
+Funguje libovolný PostgreSQL 14+. Účet z `DATABASE_URL` musí smět vytvářet tabulky a jednu roli bez přihlášení (`ztrouby_app`) – to splňuje vlastník databáze u Neonu, Vercel Postgres, Railway, Render i vlastní instalace.
+
+**Neon / Vercel Postgres (doporučeno k Vercelu, má bezplatnou úroveň):**
+1. Na <https://neon.tech> (nebo ve Vercelu *Storage → Create Database → Neon*) vytvořte databázi, region *Frankfurt (eu-central-1)*.
+2. Zkopírujte dva připojovací řetězce: **pooled** (obsahuje `-pooler`) do `DATABASE_URL` a **direct** do `DATABASE_URL_UNPOOLED`. Oba se `sslmode=require`.
+3. Lokálně s těmito hodnotami v `.env.local` spusťte `npm run db:migrate`.
+
+Migrace jsou v `db/migrations`, `npm run db:migrate` spouští jen ty, které ještě neproběhly (eviduje je tabulka `schema_migrations`). Spouštějte ho po každé aktualizaci aplikace (Docker to dělá sám při startu).
+
+**Zálohy databáze:** kromě exportu v aplikaci (*Nastavení → Úplná záloha*) doporučujeme zálohy u poskytovatele (Neon má historii a obnovu k bodu v čase), u vlastního serveru `pg_dump`.
 
 ## 6. Vytvoření administrátorského účtu
 
+Registrace v aplikaci neexistuje. Účet vytvoříte z počítače, který má přístup k databázi:
+
 ```bash
 npm run create-admin -- vas-email@example.cz
-# zadejte heslo (min. 12 znaků) – nezobrazuje se
+# zadejte heslo (min. 12 znaků) dvakrát – nezobrazuje se
 ```
 
-Skript vytvoří potvrzený účet v Supabase Auth a nastaví mu roli `admin`. Pokud účet už existuje (např. vytvořený v *Authentication → Users → Add user*), jen ho povýší.
-
-Alternativa bez skriptu: vytvořte uživatele v dashboardu (*Add user → Create new user*, zaškrtněte *Auto Confirm*) a v SQL Editoru spusťte:
-
-```sql
-update public.profiles set role = 'admin' where email = 'vas-email@example.cz';
-```
+Stejný příkaz slouží jako **obnova zapomenutého hesla**: u existujícího e‑mailu nastaví nové heslo, zruší zámek a odhlásí všechna zařízení. Heslo lze měnit i v aplikaci v *Nastavení → Účet*.
 
 Při prvním přihlášení se automaticky založí výchozí sortiment (7 výrobků s orientačními cenami, receptury jako **koncepty bez surovin**, katalog běžných surovin **bez cen**). Nic z toho se nevydává za ověřené – doplňte suroviny, gramáže a ceny.
 
-## 7. Nasazení na Vercel
+## 7. Nasazení
 
-1. Pushněte repozitář na GitHub a ve Vercelu zvolte *Add New → Project → Import*.
-2. Framework se rozpozná (Next.js). V *Environment Variables* nastavte:
-   - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-   - `DATABASE_URL` (Transaction pooler, port 6543),
-   - volitelně `DATABASE_POOL_MAX` (výchozí 5).
-   - **Nenastavujte** `SUPABASE_SERVICE_ROLE_KEY`.
-3. *Deploy*. Po nasazení nastavte v Supabase *Site URL* na doménu Vercelu.
-4. Na iPhonu otevřete aplikaci v Safari → *Sdílet → Přidat na plochu*. Ikona „Z trouby“ se otevře jako samostatná aplikace; přihlášení zůstává zachováno.
+### A) Vercel + Neon
+
+1. Pushněte repozitář na GitHub, ve Vercelu *Add New → Project → Import*.
+2. Připojte databázi: *Storage → Neon* (Vercel sám doplní `DATABASE_URL` a `DATABASE_URL_UNPOOLED`), nebo proměnné zadejte ručně v *Settings → Environment Variables*.
+3. *Deploy*. Jednorázově (a po aktualizacích) spusťte z počítače `npm run db:migrate` a `npm run create-admin -- vas@email.cz` s produkčními hodnotami v `.env.local`.
+
+### B) Vlastní server (Docker)
+
+```bash
+echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" > .env
+docker compose up -d --build
+docker compose exec app node --experimental-strip-types --no-warnings scripts/create-admin.mjs vas@email.cz
+```
+
+Aplikace poslouchá na `127.0.0.1:3000`; vystavte ji přes HTTPS (např. Caddy: `ztrouby.example.cz { reverse_proxy 127.0.0.1:3000 }`). Bez HTTPS se v produkci cookie relace nepošle – pro čisté HTTP v domácí síti lze nastavit `INSECURE_COOKIES=1` (nedoporučeno).
+
+### Mobil
+
+Na iPhonu otevřete aplikaci v Safari → *Sdílet → Přidat na plochu*. Ikona „Z trouby“ se otevře jako samostatná aplikace; přihlášení vydrží 30 dní.
 
 ## 8. Import původních dat
 
@@ -199,12 +217,12 @@ Záloha z této aplikace (*Nastavení → Úplná záloha (JSON)*) se obnovuje s
 
 | Příkaz | Co ověřuje |
 |---|---|
-| `npm test` | výpočty (suroviny, dávky, polotovary, změna ceny, dvojitá dávka, medovník na porce, perníčky na gramy, celé dávky a přebytky, měsíc, marže vs. přirážka, bod zvratu), import/export, CSV, česká čísla |
-| `npm run test:db` | migrace na čistém PostgreSQL, RLS a izolace uživatelů, zákaz cizích odkazů, zákaz povýšení role, historie cen, cykly polotovarů, uložení a načtení, záloha a obnova, import staré kalkulačky |
-| `npm run test:e2e` | v prohlížeči (mobilní viewport): ochrana stránek a API, přihlášení, celý scénář surovina → receptura → výrobek → kalkulace → kavárna, odhlášení a opětovné přihlášení, scénáře, export a obnova zálohy, import staré kalkulačky, izolace druhého účtu, žádný vodorovný posun na mobilu |
+| `npm test` | hashování hesel a tokenů, výpočty (suroviny, dávky, polotovary, změna ceny, dvojitá dávka, medovník na porce, perníčky na gramy, celé dávky a přebytky, měsíc, marže vs. přirážka, bod zvratu), import/export, CSV, česká čísla |
+| `npm run test:db` | migrace na čistém PostgreSQL, RLS a izolace uživatelů, zákaz cizích odkazů, zákaz povýšení role a čtení hesel/relací, historie cen, cykly polotovarů, uložení a načtení, záloha a obnova, import staré kalkulačky |
+| `npm run test:e2e` | v prohlížeči (mobilní viewport): ochrana stránek a API, přihlášení, celý scénář surovina → receptura → výrobek → kalkulace → kavárna, odhlášení a opětovné přihlášení, scénáře, export a obnova zálohy, import staré kalkulačky, izolace druhého účtu, zamčení účtu po chybných pokusech, změna hesla, neplatnost cookie po odhlášení i podvržené cookie, žádný vodorovný posun na mobilu |
 | `npm run test:all` | vše výše + typová kontrola a produkční build |
 
-Databázové a E2E testy potřebují lokální PostgreSQL (`postgresql://postgres:postgres@localhost:5432`, lze změnit přes `TEST_PG_ADMIN_URL`). Skript `scripts/test-db-reset.mjs` vytvoří databázi `ztrouby_test`, doplní malý shim prostředí Supabase (`test/support/supabase-shim.sql`: role `anon`/`authenticated`, `auth.users`, `auth.uid()`) a spustí migrace. E2E testy používají `test/support/mock-auth-server.mjs` – **pouze testovací** náhradu Supabase Auth API. Před `npm run test:e2e` spusťte `npm run build` s proměnnými z `.env.test`:
+Databázové a E2E testy potřebují lokální PostgreSQL (`postgresql://postgres:postgres@localhost:5432`, lze změnit přes `TEST_PG_ADMIN_URL`). Skript `scripts/test-db-reset.mjs` vytvoří databázi `ztrouby_test` a spustí migrace; E2E testy si v ní založí testovací účty a používají skutečné přihlašování aplikace. Před `npm run test:e2e` spusťte build s proměnnými z `.env.test`:
 
 ```bash
 set -a && . ./.env.test && set +a && npm run build && npm run test:e2e
@@ -215,10 +233,12 @@ GitHub Actions (`.github/workflows/ci.yml`) spouští všechny testy automaticky
 ## 11. Bezpečnost
 
 - Jediná veřejná stránka je `/login` (a technické soubory: manifest, ikony, service worker). Žádná registrace.
-- Ochrana ve třech vrstvách: `proxy.ts` (přesměrování / 401), ověření admina v každé stránce, server action i API (`lib/auth.ts`), a **RLS v databázi** (`owner_id = auth.uid() AND is_admin()`).
-- Role `anon` nemá k tabulkám žádná práva; uživatel bez role admin nevidí ani nezapíše nic. Uživatel si nemůže změnit roli (profil je jen pro čtení).
-- Historie cen nejde upravit ani smazat.
-- V klientském kódu je jen veřejný anon klíč. `DATABASE_URL` je pouze serverová proměnná; service role klíč se používá výhradně lokálně ve skriptu.
+- Ochrana ve třech vrstvách: `proxy.ts` (přesměrování / 401 bez cookie), ověření relace a role admin v každé stránce, server action i API (`lib/auth.ts`), a **RLS v databázi**.
+- Hesla: scrypt (N=2¹⁶, r=8) s náhodnou solí; min. 12 znaků; zámek účtu na 15 min po 5 chybných pokusech; stejná odezva pro neexistující účet.
+- Relace: náhodný 256bitový token jen v HTTP‑only cookie, v databázi pouze SHA‑256 otisk; odhlášení a změna hesla relace skutečně zneplatní; možnost odhlásit ostatní zařízení.
+- Role aplikace v databázi nevidí hesla ani relace a nemůže měnit role; uživatel bez role admin nevidí ani nezapíše žádná data. Historie cen nejde upravit ani smazat.
+- Žádné tajné údaje v klientském kódu; jediné tajemství je `DATABASE_URL` na serveru.
+- Server actions Next.js kontrolují původ požadavku (ochrana proti CSRF), cookie má `SameSite=Lax`.
 - Bezpečnostní hlavičky (`X-Frame-Options: DENY`, `nosniff`, …), CSV export chráněný proti vkládání vzorců.
 - PWA záměrně **neukládá data offline**. Bez připojení aplikace ukáže upozornění a změny nikdy neoznačí jako uložené.
 
@@ -233,3 +253,4 @@ GitHub Actions (`.github/workflows/ci.yml`) spouští všechny testy automaticky
 - Pro kalkulace se používá **aktuální** cena suroviny; historie slouží pro sledování zdražování.
 - Výchozí receptury nemají vymyšlené gramáže – mají jen výtěžnost z podkladů (12 uzlů, 8 cookies, 700 g perníčků…) a jsou označené jako neověřené koncepty.
 - Architektura je připravena pro více uživatelů (`owner_id` všude); v první verzi má přístup jen role `admin`.
+- Obnova zapomenutého hesla e‑mailem není (aplikace neposílá e‑maily); heslo obnoví správce příkazem `create-admin`.

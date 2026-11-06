@@ -1,14 +1,14 @@
 import postgres from 'postgres';
 // @ts-expect-error – JS modul bez typů
 import { resetTestDb } from '../../scripts/test-db-reset.mjs';
+import { hashPassword } from '../../src/lib/password';
 
 export default async function globalSetup() {
   const url: string = await resetTestDb();
   const sql = postgres(url, { max: 1, onnotice: () => {} });
-  for (const email of ['admin@ztrouby.test', 'druha@ztrouby.test']) {
-    await sql`insert into auth.users (email, test_password) values (${email}, 'heslo123')`;
-    await sql`update public.profiles set role = 'admin' where email = ${email}`;
+  const hash = await hashPassword('heslo123');
+  for (const [email, role] of [['admin@ztrouby.test', 'admin'], ['druha@ztrouby.test', 'admin'], ['host@ztrouby.test', 'user'], ['zamek@ztrouby.test', 'admin']]) {
+    await sql`insert into public.app_users (email, password_hash, role) values (${email}, ${hash}, ${role})`;
   }
-  await sql`insert into auth.users (email, test_password) values ('host@ztrouby.test', 'heslo123')`;
   await sql.end();
 }

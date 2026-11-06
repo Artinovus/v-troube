@@ -9,6 +9,7 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  output: 'standalone',
   serverExternalPackages: ['postgres'],
   experimental: { serverActions: { bodySizeLimit: '5mb' } },
   async headers() {

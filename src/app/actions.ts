@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
-import { withAdminTx } from '@/lib/auth';
+import { changePassword, logoutOtherSessions, requireAdmin, withAdminTx } from '@/lib/auth';
 import { runAction } from '@/lib/errors';
 import {
   ingredientSchema,
@@ -348,4 +348,27 @@ export async function importLegacyAction(json: unknown, decisions: LegacyDecisio
     done();
     return res;
   }, 'Import dokončen.');
+}
+
+// ---------------------------------------------------------------------------
+// Účet
+// ---------------------------------------------------------------------------
+export async function changePasswordAction(input: unknown): Promise<ActionResult> {
+  return runAction(async () => {
+    const data = z
+      .object({ current: z.string().min(1, 'Zadejte současné heslo.').max(200), next: z.string().max(200), confirm: z.string().max(200) })
+      .refine((v) => v.next === v.confirm, 'Nová hesla se neshodují.')
+      .parse(input);
+    const user = await requireAdmin();
+    const r = await changePassword(user, data.current, data.next);
+    if (!r.ok) throw new Error(r.error);
+    return undefined;
+  }, 'Heslo změněno. Ostatní zařízení byla odhlášena.');
+}
+
+export async function logoutOtherSessionsAction(): Promise<ActionResult> {
+  return runAction(async () => {
+    await logoutOtherSessions(await requireAdmin());
+    return undefined;
+  }, 'Ostatní zařízení byla odhlášena.');
 }
